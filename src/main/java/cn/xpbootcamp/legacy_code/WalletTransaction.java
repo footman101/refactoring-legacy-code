@@ -16,16 +16,11 @@ public class WalletTransaction {
     private Double amount;
     private STATUS status;
 
+    public static final long EXPIRE_DURATION = 20 * 24 * 60 * 60 * 1000;
+
 
     public WalletTransaction(String preAssignedId, Long buyerId, Long sellerId, Double amount) {
-        if (preAssignedId != null && !preAssignedId.isEmpty()) {
-            this.id = preAssignedId;
-        } else {
-            this.id = IdGenerator.generateTransactionId();
-        }
-        if (!this.id.startsWith("t_")) {
-            this.id = "t_" + preAssignedId;
-        }
+        this.id = preAssignedIdToId(preAssignedId);
         this.buyerId = buyerId;
         this.sellerId = sellerId;
         this.amount = amount;
@@ -33,29 +28,43 @@ public class WalletTransaction {
         this.createdTimestamp = System.currentTimeMillis();
     }
 
+    private String preAssignedIdToId(String preAssignedId) {
+        String result;
+        if (preAssignedId != null && !preAssignedId.isEmpty()) {
+            result = preAssignedId;
+        } else {
+            result = new IdGenerator().generateTransactionId();
+        }
+        if (!result.startsWith("t_")) {
+            result = "t_" + preAssignedId;
+        }
+
+        return result;
+    }
+
+
     public boolean execute() throws InvalidTransactionException {
         if (buyerId == null || (sellerId == null || amount < 0.0)) {
             throw new InvalidTransactionException("This is an invalid transaction");
         }
+
+        long currentTimeMillis = System.currentTimeMillis();
+        if (currentTimeMillis - createdTimestamp > EXPIRE_DURATION) {
+            this.status = STATUS.EXPIRED;
+            return false;
+        }
+
         if (status == STATUS.EXECUTED) return true;
         boolean isLocked = false;
         try {
             isLocked = RedisDistributedLock.getSingletonInstance().lock(id);
-
-            // 锁定未成功，返回false
             if (!isLocked) {
                 return false;
             }
+
             if (status == STATUS.EXECUTED) return true; // double check
-            long executionInvokedTimestamp = System.currentTimeMillis();
-            // 交易超过20天
-            if (executionInvokedTimestamp - createdTimestamp > 1728000000) {
-                this.status = STATUS.EXPIRED;
-                return false;
-            }
-            WalletService walletService = new WalletServiceImpl();
-            String walletTransactionId = walletService.moveMoney(id, buyerId, sellerId, amount);
-            if (walletTransactionId != null) {
+
+            if (new WalletServiceImpl().moveMoney(id, buyerId, sellerId, amount) != null) {
                 this.status = STATUS.EXECUTED;
                 return true;
             } else {
